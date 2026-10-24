@@ -115,3 +115,58 @@ def test_other_user_cannot_access_project_tasks():
         )
 
     assert response.status_code == 404
+
+
+def test_task_priority_defaults_to_medium():
+    with TestClient(app) as client:
+        headers, project_id = create_user_and_project(client)
+
+        response = client.post(
+            f"/projects/{project_id}/tasks",
+            headers=headers,
+            json={"title": "Default priority task"},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["priority"] == "medium"
+
+
+def test_task_priority_can_be_set_and_updated():
+    with TestClient(app) as client:
+        headers, project_id = create_user_and_project(client)
+        base = f"/projects/{project_id}/tasks"
+
+        created = client.post(
+            base,
+            headers=headers,
+            json={"title": "Urgent task", "priority": "high"},
+        )
+
+        assert created.status_code == 201
+        assert created.json()["priority"] == "high"
+
+        task_id = created.json()["id"]
+
+        updated = client.patch(
+            f"{base}/{task_id}",
+            headers=headers,
+            json={"priority": "low"},
+        )
+
+        assert updated.status_code == 200
+        assert updated.json()["priority"] == "low"
+
+def test_invalid_task_priority_is_rejected():
+    with TestClient(app) as client:
+        headers, project_id = create_user_and_project(client)
+
+        response = client.post(
+            f"/projects/{project_id}/tasks",
+            headers=headers,
+            json={
+                "title": "Invalid priority task",
+                "priority": "urgent",
+            },
+        )
+
+        assert response.status_code == 422

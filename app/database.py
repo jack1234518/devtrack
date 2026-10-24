@@ -21,11 +21,11 @@ def get_database_connection():
 
 
 def create_tables():
-    """Create and safely update the application database tables."""
+    """Create tables and safely apply schema updates."""
     with get_database_connection() as connection:
         with connection.cursor() as cursor:
 
-            # 1. Create the users table.
+            # Users
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -37,7 +37,7 @@ def create_tables():
                 """
             )
 
-            # 2. Create the projects table.
+            # Projects
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
@@ -60,7 +60,7 @@ def create_tables():
                 """
             )
 
-            # 3. Safely add user_id to an existing projects table.
+            # Safe migration for existing projects.
             cursor.execute(
                 """
                 ALTER TABLE projects
@@ -69,7 +69,7 @@ def create_tables():
                 """
             )
 
-            # 4. Create the tasks table with due_date.
+            # Tasks, including priority and deadline.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -86,6 +86,10 @@ def create_tables():
                                 'completed'
                             )
                         ),
+                    priority VARCHAR(10) NOT NULL DEFAULT 'medium'
+                        CHECK (
+                            priority IN ('low', 'medium', 'high')
+                        ),
                     due_date DATE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -93,11 +97,38 @@ def create_tables():
                 """
             )
 
-            # 5. Safely add due_date to existing tasks tables.
-            # Existing tasks are preserved; their due_date will be NULL.
+            # Safe migrations for existing tasks.
             cursor.execute(
                 """
                 ALTER TABLE tasks
                 ADD COLUMN IF NOT EXISTS due_date DATE;
+                """
+            )
+
+            cursor.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN IF NOT EXISTS priority VARCHAR(10)
+                NOT NULL DEFAULT 'medium';
+                """
+            )
+
+            # Ensure existing and future priorities are valid.
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'tasks_priority_check'
+                          AND conrelid = 'tasks'::regclass
+                    ) THEN
+                        ALTER TABLE tasks
+                        ADD CONSTRAINT tasks_priority_check
+                        CHECK (priority IN ('low', 'medium', 'high'));
+                    END IF;
+                END
+                $$;
                 """
             )

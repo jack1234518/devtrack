@@ -21,6 +21,7 @@ class TaskCreate(BaseModel):
     description: str | None = None
     status: Literal["todo", "in_progress", "completed"] = "todo"
     due_date: date | None = None
+    priority: Literal["low", "medium", "high"] = "medium"
 
 
 class TaskUpdate(BaseModel):
@@ -28,7 +29,7 @@ class TaskUpdate(BaseModel):
     description: str | None = None
     status: Literal["todo", "in_progress", "completed"] | None = None
     due_date: date | None = None
-
+    priority: Literal["low", "medium", "high"] | None = None
 
 def ensure_project_owner(cursor, project_id: int, user_id: int):
     """Ensure the authenticated user owns the project."""
@@ -70,9 +71,9 @@ def create_task(
                 cursor.execute(
                     """
                     INSERT INTO tasks (
-                        project_id, title, description, status, due_date
+                        project_id, title, description, status, due_date, priority
                     )
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s,%s, %s)
                     RETURNING *
                     """,
                     (
@@ -81,6 +82,7 @@ def create_task(
                         task.description,
                         task.status,
                         task.due_date,
+                        task.priority,
                     ),
                 )
                 created_task = cursor.fetchone()
@@ -112,6 +114,11 @@ def list_tasks(
                     FROM tasks
                     WHERE project_id = %s
                     ORDER BY
+                        CASE priority
+                            WHEN 'high' THEN 1
+                            WHEN 'medium' THEN 2
+                            WHEN 'low' THEN 3
+                        END,
                         CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
                         due_date,
                         id
@@ -232,7 +239,7 @@ def update_task(
     if "due_date" in changes and changes["due_date"] is None:
         pass
 
-    allowed_fields = {"title", "description", "status", "due_date"}
+    allowed_fields = {"title", "description", "status", "due_date","priority"}
     if not set(changes).issubset(allowed_fields):
         raise HTTPException(
             status_code=400,
