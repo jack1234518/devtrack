@@ -1,4 +1,5 @@
 
+from datetime import date
 from typing import Literal
 
 import psycopg
@@ -9,29 +10,48 @@ from app.database import get_database_connection
 from app.main import get_current_user
 
 
-router = APIRouter(prefix="/projects/{project_id}/tasks", tags=["Tasks"])
+router = APIRouter(
+    prefix="/projects/{project_id}/tasks",
+    tags=["Tasks"],
+)
 
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str | None = None
     status: Literal["todo", "in_progress", "completed"] = "todo"
+    due_date: date | None = None
 
 
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     status: Literal["todo", "in_progress", "completed"] | None = None
+    due_date: date | None = None
 
 
 def ensure_project_owner(cursor, project_id: int, user_id: int):
+    """Ensure the authenticated user owns the project."""
     cursor.execute(
         "SELECT id FROM projects WHERE id = %s AND user_id = %s",
         (project_id, user_id),
     )
 
     if cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+
+def task_response(task: dict) -> dict:
+    """Add calculated deadline information to a task response."""
+    task["is_overdue"] = (
+        task["due_date"] is not None
+        and task["due_date"] < date.today()
+        and task["status"] != "completed"
+    )
+    return task
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -43,17 +63,30 @@ def create_task(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
-                ensure_project_owner(cursor, project_id, current_user["id"])
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
 
                 cursor.execute(
                     """
-                    INSERT INTO tasks (project_id, title, description, status)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO tasks (
+                        project_id, title, description, status, due_date
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING *
                     """,
-                    (project_id, task.title, task.description, task.status),
+                    (
+                        project_id,
+                        task.title,
+                        task.description,
+                        task.status,
+                        task.due_date,
+                    ),
                 )
-                return cursor.fetchone()
+                created_task = cursor.fetchone()
+
+        return task_response(created_task)
+
     except psycopg.Error:
         raise HTTPException(
             status_code=503,
@@ -69,13 +102,61 @@ def list_tasks(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
-                ensure_project_owner(cursor, project_id, current_user["id"])
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
 
                 cursor.execute(
-                    "SELECT * FROM tasks WHERE project_id = %s ORDER BY id",
+                    """
+                    SELECT *
+                    FROM tasks
+                    WHERE project_id = %s
+                    ORDER BY
+                        CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+                        due_date,
+                        id
+                    """,
                     (project_id,),
                 )
-                return cursor.fetchall()
+                tasks = cursor.fetchall()
+
+        return [task_response(task) for task in tasks]
+
+    except psycopg.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Database operation failed.",
+        )
+
+
+@router.get("/overdue")
+def list_overdue_tasks(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return unfinished tasks whose deadlines have passed."""
+    try:
+        with get_database_connection() as connection:
+            with connection.cursor() as cursor:
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
+
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM tasks
+                    WHERE project_id = %s
+                      AND due_date < CURRENT_DATE
+                      AND status != 'completed'
+                    ORDER BY due_date, id
+                    """,
+                    (project_id,),
+                )
+                tasks = cursor.fetchall()
+
+        return [task_response(task) for task in tasks]
+
     except psycopg.Error:
         raise HTTPException(
             status_code=503,
@@ -92,11 +173,14 @@ def get_task(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
-                ensure_project_owner(cursor, project_id, current_user["id"])
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
 
                 cursor.execute(
                     """
-                    SELECT * FROM tasks
+                    SELECT *
+                    FROM tasks
                     WHERE id = %s AND project_id = %s
                     """,
                     (task_id, project_id),
@@ -104,9 +188,13 @@ def get_task(
                 task = cursor.fetchone()
 
         if task is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
 
-        return task
+        return task_response(task)
+
     except psycopg.Error:
         raise HTTPException(
             status_code=503,
@@ -129,20 +217,40 @@ def update_task(
             detail="Provide at least one field to update.",
         )
 
-    if any(value is None for value in changes.values()):
+    nullable_fields = {"due_date", "description"}
+
+    if any(
+        value is None and field not in nullable_fields
+        for field, value in changes.items()
+    ):
         raise HTTPException(
             status_code=422,
-            detail="Fields cannot be set to null.",
+            detail="Title and status cannot be set to null.",
         )
 
-    assignments = ", ".join(f"{field} = %s" for field in changes)
+    # Allow explicitly clearing an existing deadline or description.
+    if "due_date" in changes and changes["due_date"] is None:
+        pass
+
+    allowed_fields = {"title", "description", "status", "due_date"}
+    if not set(changes).issubset(allowed_fields):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid update fields.",
+        )
+
+    assignments = ", ".join(
+        f"{field} = %s" for field in changes
+    )
     values = list(changes.values())
     values.extend([task_id, project_id])
 
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
-                ensure_project_owner(cursor, project_id, current_user["id"])
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
 
                 cursor.execute(
                     f"""
@@ -153,12 +261,16 @@ def update_task(
                     """,
                     values,
                 )
-                task = cursor.fetchone()
+                updated_task = cursor.fetchone()
 
-        if task is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+        if updated_task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
 
-        return task
+        return task_response(updated_task)
+
     except psycopg.Error:
         raise HTTPException(
             status_code=503,
@@ -166,7 +278,10 @@ def update_task(
         )
 
 
-@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 def delete_task(
     project_id: int,
     task_id: int,
@@ -175,7 +290,9 @@ def delete_task(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
-                ensure_project_owner(cursor, project_id, current_user["id"])
+                ensure_project_owner(
+                    cursor, project_id, current_user["id"]
+                )
 
                 cursor.execute(
                     """
@@ -185,12 +302,16 @@ def delete_task(
                     """,
                     (task_id, project_id),
                 )
-                deleted = cursor.fetchone()
+                deleted_task = cursor.fetchone()
 
-        if deleted is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+        if deleted_task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     except psycopg.Error:
         raise HTTPException(
             status_code=503,

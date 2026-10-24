@@ -21,9 +21,11 @@ def get_database_connection():
 
 
 def create_tables():
-    """Create the user and project tables."""
+    """Create and safely update the application database tables."""
     with get_database_connection() as connection:
         with connection.cursor() as cursor:
+
+            # 1. Create the users table.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -35,6 +37,7 @@ def create_tables():
                 """
             )
 
+            # 2. Create the projects table.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
@@ -51,12 +54,13 @@ def create_tables():
                         ),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+                    user_id INTEGER
+                        REFERENCES users(id) ON DELETE CASCADE
                 );
                 """
             )
 
-            # Upgrade an existing projects table without deleting its data.
+            # 3. Safely add user_id to an existing projects table.
             cursor.execute(
                 """
                 ALTER TABLE projects
@@ -65,6 +69,7 @@ def create_tables():
                 """
             )
 
+            # 4. Create the tasks table with due_date.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -81,8 +86,18 @@ def create_tables():
                                 'completed'
                             )
                         ),
+                    due_date DATE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+                """
+            )
+
+            # 5. Safely add due_date to existing tasks tables.
+            # Existing tasks are preserved; their due_date will be NULL.
+            cursor.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN IF NOT EXISTS due_date DATE;
                 """
             )
