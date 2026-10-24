@@ -374,9 +374,11 @@ def project_progress(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
+                # Verify that the project belongs to the logged-in user.
                 cursor.execute(
                     """
-                    SELECT id FROM projects
+                    SELECT id
+                    FROM projects
                     WHERE id = %s AND user_id = %s
                     """,
                     (project_id, current_user["id"]),
@@ -388,18 +390,35 @@ def project_progress(
                         detail="Project not found",
                     )
 
+                # Calculate project task statistics in one query.
                 cursor.execute(
                     """
                     SELECT
                         COUNT(*) AS total_tasks,
+
                         COUNT(*) FILTER (
                             WHERE status = 'completed'
-                        ) AS completed_tasks
+                        ) AS completed_tasks,
+
+                        COUNT(*) FILTER (
+                            WHERE status = 'in_progress'
+                        ) AS in_progress_tasks,
+
+                        COUNT(*) FILTER (
+                            WHERE status = 'todo'
+                        ) AS todo_tasks,
+
+                        COUNT(*) FILTER (
+                            WHERE due_date < CURRENT_DATE
+                              AND status != 'completed'
+                        ) AS overdue_tasks
+
                     FROM tasks
                     WHERE project_id = %s
                     """,
                     (project_id,),
                 )
+
                 result = cursor.fetchone()
 
         total = result["total_tasks"]
@@ -409,10 +428,16 @@ def project_progress(
             "project_id": project_id,
             "total_tasks": total,
             "completed_tasks": completed,
+            "in_progress_tasks": result["in_progress_tasks"],
+            "todo_tasks": result["todo_tasks"],
+            "overdue_tasks": result["overdue_tasks"],
             "completion_percentage": (
-                round(completed / total * 100, 2) if total else 0
+                round(completed / total * 100, 2)
+                if total
+                else 0.0
             ),
         }
+
     except psycopg.Error:
         database_error()
 
