@@ -6,11 +6,7 @@ from psycopg.rows import dict_row
 
 
 def get_database_connection():
-    """
-    Open a connection to the PostgreSQL database.
-
-    DATABASE_URL is supplied by Docker Compose.
-    """
+    """Open a connection to the PostgreSQL database."""
     database_url = os.getenv("DATABASE_URL")
 
     if not database_url:
@@ -25,11 +21,20 @@ def get_database_connection():
 
 
 def create_tables():
-    """
-    Create the projects table if it does not already exist.
-    """
+    """Create the user and project tables."""
     with get_database_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
@@ -45,7 +50,17 @@ def create_tables():
                             )
                         ),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
                 );
+                """
+            )
+
+            # Upgrade an existing projects table without deleting its data.
+            cursor.execute(
+                """
+                ALTER TABLE projects
+                ADD COLUMN IF NOT EXISTS user_id INTEGER
+                REFERENCES users(id) ON DELETE CASCADE;
                 """
             )

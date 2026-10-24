@@ -7,6 +7,7 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://devtrack_user:devtrack_password@db:5432/devtrack
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-devtrack-local-development-secret-change-before-deployment}
     depends_on:
       db:
         condition: service_healthy
