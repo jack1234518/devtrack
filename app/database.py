@@ -64,3 +64,25 @@ def create_tables():
                 REFERENCES users(id) ON DELETE CASCADE;
                 """
             )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    project_id INTEGER NOT NULL
+                        REFERENCES projects(id) ON DELETE CASCADE,
+                    title VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    status VARCHAR(20) NOT NULL DEFAULT 'todo'
+                        CHECK (
+                            status IN (
+                                'todo',
+                                'in_progress',
+                                'completed'
+                            )
+                        ),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )

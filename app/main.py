@@ -364,3 +364,59 @@ def delete_project(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except psycopg.Error:
         database_error()
+
+
+@app.get("/projects/{project_id}/progress")
+def project_progress(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        with get_database_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id FROM projects
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (project_id, current_user["id"]),
+                )
+
+                if cursor.fetchone() is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Project not found",
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total_tasks,
+                        COUNT(*) FILTER (
+                            WHERE status = 'completed'
+                        ) AS completed_tasks
+                    FROM tasks
+                    WHERE project_id = %s
+                    """,
+                    (project_id,),
+                )
+                result = cursor.fetchone()
+
+        total = result["total_tasks"]
+        completed = result["completed_tasks"]
+
+        return {
+            "project_id": project_id,
+            "total_tasks": total,
+            "completed_tasks": completed,
+            "completion_percentage": (
+                round(completed / total * 100, 2) if total else 0
+            ),
+        }
+    except psycopg.Error:
+        database_error()
+
+
+from app.routes import router as tasks_router
+
+app.include_router(tasks_router)
