@@ -1,4 +1,5 @@
 
+import logging
 import re
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -19,12 +20,41 @@ from app.security import (
     verify_password,
 )
 
+# --------------------------------------------------
+# LOGGING CONFIGURATION
+# --------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("devtrack")
+
+
+# --------------------------------------------------
+# APPLICATION STARTUP AND SHUTDOWN
+# --------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_tables()
+    logger.info("Starting DevTrack API.")
+
+    try:
+        create_tables()
+        logger.info("Database initialization completed.")
+    except Exception:
+        logger.exception("DevTrack API startup failed.")
+        raise
+
     yield
 
+    logger.info("DevTrack API shutdown.")
+
+
+# --------------------------------------------------
+# FASTAPI APPLICATION
+# --------------------------------------------------
 
 app = FastAPI(
     title="DevTrack API",
@@ -35,6 +65,10 @@ app = FastAPI(
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
+
+# --------------------------------------------------
+# REQUEST SCHEMAS
+# --------------------------------------------------
 
 class UserRegister(BaseModel):
     email: str = Field(min_length=5, max_length=255)
@@ -58,12 +92,23 @@ class ProjectUpdate(BaseModel):
     status: Literal["planned", "in_progress", "completed"] | None = None
 
 
+# --------------------------------------------------
+# ERROR HANDLING
+# --------------------------------------------------
+
 def database_error():
+    """Log a database failure and return a safe API error."""
+    logger.exception("A database operation failed.")
+
     raise HTTPException(
-        status_code=503,
-        detail="Database operation failed. Check that PostgreSQL is running.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database temporarily unavailable. Please try again later.",
     )
 
+
+# --------------------------------------------------
+# EMAIL VALIDATION
+# --------------------------------------------------
 
 def normalize_email(email: str) -> str:
     """Normalize and perform basic validation of an email address."""
@@ -71,20 +116,25 @@ def normalize_email(email: str) -> str:
 
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Enter a valid email address.",
         )
 
     return normalized
 
 
+# --------------------------------------------------
+# AUTHENTICATION DEPENDENCY
+# --------------------------------------------------
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict:
-    """Authenticate a request and return the corresponding database user."""
+    """Authenticate a request and return the database user."""
+
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -94,7 +144,7 @@ def get_current_user(
         user_id = int(payload["sub"])
     except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired access token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -110,7 +160,7 @@ def get_current_user(
 
         if user is None:
             raise HTTPException(
-                status_code=401,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account no longer exists.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
@@ -120,6 +170,10 @@ def get_current_user(
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# HOME AND HEALTH CHECKS
+# --------------------------------------------------
 
 @app.get("/")
 def home():
@@ -132,11 +186,17 @@ def home():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    """Check whether the API is responding."""
+    return {
+        "status": "healthy",
+        "service": "DevTrack API",
+        "version": "0.4.0",
+    }
 
 
 @app.get("/db-check")
 def database_check():
+    """Check whether PostgreSQL is reachable."""
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
@@ -149,9 +209,14 @@ def database_check():
             "status": "connected",
             "database": result["database_name"],
         }
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# USER REGISTRATION
+# --------------------------------------------------
 
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED)
 def register_user(user: UserRegister):
@@ -173,12 +238,17 @@ def register_user(user: UserRegister):
 
     except UniqueViolation:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists.",
         )
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# USER LOGIN
+# --------------------------------------------------
 
 @app.post("/auth/login")
 def login_user(user: UserLogin):
@@ -202,10 +272,13 @@ def login_user(user: UserLogin):
 
     if (
         database_user is None
-        or not verify_password(user.password, database_user["password_hash"])
+        or not verify_password(
+            user.password,
+            database_user["password_hash"],
+        )
     ):
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -218,6 +291,10 @@ def login_user(user: UserLogin):
         "expires_in": ACCESS_TOKEN_MINUTES * 60,
     }
 
+
+# --------------------------------------------------
+# LIST PROJECTS
+# --------------------------------------------------
 
 @app.get("/projects")
 def list_projects(current_user: dict = Depends(get_current_user)):
@@ -234,9 +311,14 @@ def list_projects(current_user: dict = Depends(get_current_user)):
                     (current_user["id"],),
                 )
                 return cursor.fetchall()
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# CREATE PROJECT
+# --------------------------------------------------
 
 @app.post("/projects", status_code=status.HTTP_201_CREATED)
 def create_project(
@@ -261,9 +343,14 @@ def create_project(
                     ),
                 )
                 return cursor.fetchone()
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# GET ONE PROJECT
+# --------------------------------------------------
 
 @app.get("/projects/{project_id}")
 def get_project(
@@ -284,12 +371,20 @@ def get_project(
                 project = cursor.fetchone()
 
         if project is None:
-            raise HTTPException(status_code=404, detail="Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
 
         return project
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# UPDATE PROJECT
+# --------------------------------------------------
 
 @app.patch("/projects/{project_id}")
 def update_project(
@@ -301,13 +396,13 @@ def update_project(
 
     if not changes:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Provide at least one field to update.",
         )
 
     if any(value is None for value in changes.values()):
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Fields cannot be set to null. Provide valid values.",
         )
 
@@ -330,12 +425,20 @@ def update_project(
                 project = cursor.fetchone()
 
         if project is None:
-            raise HTTPException(status_code=404, detail="Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
 
         return project
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# DELETE PROJECT
+# --------------------------------------------------
 
 @app.delete(
     "/projects/{project_id}",
@@ -359,12 +462,20 @@ def delete_project(
                 deleted = cursor.fetchone()
 
         if deleted is None:
-            raise HTTPException(status_code=404, detail="Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# PROJECT PROGRESS
+# --------------------------------------------------
 
 @app.get("/projects/{project_id}/progress")
 def project_progress(
@@ -374,6 +485,7 @@ def project_progress(
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
+
                 # Verify that the project belongs to the logged-in user.
                 cursor.execute(
                     """
@@ -386,11 +498,11 @@ def project_progress(
 
                 if cursor.fetchone() is None:
                     raise HTTPException(
-                        status_code=404,
+                        status_code=status.HTTP_404_NOT_FOUND,
                         detail="Project not found",
                     )
 
-                # Calculate project task statistics in one query.
+                # Calculate all task statistics in one query.
                 cursor.execute(
                     """
                     SELECT
@@ -441,6 +553,10 @@ def project_progress(
     except psycopg.Error:
         database_error()
 
+
+# --------------------------------------------------
+# TASK ROUTES
+# --------------------------------------------------
 
 from app.routes import router as tasks_router
 

@@ -1,12 +1,15 @@
 
+import logging
 import os
 
 import psycopg
 from psycopg.rows import dict_row
 
+logger = logging.getLogger(__name__)
+
 
 def get_database_connection():
-    """Open a connection to the PostgreSQL database."""
+    """Open a connection to PostgreSQL with a timeout."""
     database_url = os.getenv("DATABASE_URL")
 
     if not database_url:
@@ -14,14 +17,20 @@ def get_database_connection():
             "DATABASE_URL environment variable is not configured."
         )
 
-    return psycopg.connect(
-        database_url,
-        row_factory=dict_row,
-    )
+    try:
+        return psycopg.connect(
+            database_url,
+            row_factory=dict_row,
+            connect_timeout=5,
+            application_name="devtrack-api",
+        )
+    except psycopg.Error:
+        logger.exception("Failed to connect to the PostgreSQL database.")
+        raise
 
 
 def create_tables():
-    """Create tables and safely apply schema updates."""
+    """Create tables and safely apply existing schema updates."""
     with get_database_connection() as connection:
         with connection.cursor() as cursor:
 
@@ -60,7 +69,7 @@ def create_tables():
                 """
             )
 
-            # Safe migration for existing projects.
+            # Migration for existing projects.
             cursor.execute(
                 """
                 ALTER TABLE projects
@@ -69,7 +78,7 @@ def create_tables():
                 """
             )
 
-            # Tasks, including priority and deadline.
+            # Tasks
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -97,7 +106,7 @@ def create_tables():
                 """
             )
 
-            # Safe migrations for existing tasks.
+            # Migrations for existing tasks.
             cursor.execute(
                 """
                 ALTER TABLE tasks
@@ -113,7 +122,7 @@ def create_tables():
                 """
             )
 
-            # Ensure existing and future priorities are valid.
+            # Ensure priorities are restricted to valid values.
             cursor.execute(
                 """
                 DO $$
@@ -132,3 +141,5 @@ def create_tables():
                 $$;
                 """
             )
+
+    logger.info("Database tables and schema checks completed.")
