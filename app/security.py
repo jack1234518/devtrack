@@ -5,14 +5,39 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from pwdlib import PasswordHash
 
-password_hash = PasswordHash.recommended()
+# Application environment: development, test, or production.
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 
-JWT_SECRET_KEY = os.getenv(
-    "JWT_SECRET_KEY",
-    "devtrack-local-development-secret-change-before-deployment",
+# Never use the development fallback in production.
+_DEVELOPMENT_SECRET = (
+    "devtrack-local-development-secret-change-before-deployment"
 )
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
+
+if not JWT_SECRET_KEY:
+    if APP_ENV in {"development", "test"}:
+        JWT_SECRET_KEY = _DEVELOPMENT_SECRET
+    else:
+        raise RuntimeError(
+            "JWT_SECRET_KEY must be configured when running in production."
+        )
+
+if APP_ENV == "production":
+    if len(JWT_SECRET_KEY) < 32:
+        raise RuntimeError(
+            "In production, JWT_SECRET_KEY must contain at least 32 characters."
+        )
+
+    if JWT_SECRET_KEY == _DEVELOPMENT_SECRET:
+        raise RuntimeError(
+            "The development JWT secret cannot be used in production."
+        )
+
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 30
+
+password_hash = PasswordHash.recommended()
 
 
 def hash_password(password: str) -> str:

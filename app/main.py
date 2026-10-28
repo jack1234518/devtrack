@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
-from app.database import create_tables, get_database_connection
+from app.database import get_database_connection
 from app.security import (
     ACCESS_TOKEN_MINUTES,
     create_access_token,
@@ -41,10 +41,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting DevTrack API.")
 
     try:
-        create_tables()
-        logger.info("Database initialization completed.")
+        with get_database_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+
+        logger.info("Database connection verified.")
     except Exception:
-        logger.exception("DevTrack API startup failed.")
+        logger.exception("DevTrack API startup database check failed.")
         raise
 
     yield

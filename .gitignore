@@ -9,6 +9,13 @@ venv/
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
+
+# Database backups and dumps
+*.dump
+*.dumpcls
+*.sql
+*.backup
 
 # Testing and coverage
 .pytest_cache/
