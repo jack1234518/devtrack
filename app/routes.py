@@ -1,9 +1,10 @@
 
 from datetime import date
+from math import ceil
 from typing import Literal
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from app.database import get_database_connection
@@ -15,26 +16,34 @@ router = APIRouter(
     tags=["Tasks"],
 )
 
+TaskStatus = Literal["todo", "in_progress", "completed"]
+TaskPriority = Literal["low", "medium", "high"]
+
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str | None = None
-    status: Literal["todo", "in_progress", "completed"] = "todo"
+    status: TaskStatus = "todo"
     due_date: date | None = None
-    priority: Literal["low", "medium", "high"] = "medium"
+    priority: TaskPriority = "medium"
 
 
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    status: Literal["todo", "in_progress", "completed"] | None = None
+    status: TaskStatus | None = None
     due_date: date | None = None
-    priority: Literal["low", "medium", "high"] | None = None
+    priority: TaskPriority | None = None
+
 
 def ensure_project_owner(cursor, project_id: int, user_id: int):
-    """Ensure the authenticated user owns the project."""
+    """Only allow the owner to access a project's tasks."""
     cursor.execute(
-        "SELECT id FROM projects WHERE id = %s AND user_id = %s",
+        """
+        SELECT id
+        FROM projects
+        WHERE id = %s AND user_id = %s
+        """,
         (project_id, user_id),
     )
 
@@ -46,7 +55,7 @@ def ensure_project_owner(cursor, project_id: int, user_id: int):
 
 
 def task_response(task: dict) -> dict:
-    """Add calculated deadline information to a task response."""
+    """Add a calculated overdue flag to a task."""
     task["is_overdue"] = (
         task["due_date"] is not None
         and task["due_date"] < date.today()
@@ -71,9 +80,14 @@ def create_task(
                 cursor.execute(
                     """
                     INSERT INTO tasks (
-                        project_id, title, description, status, due_date, priority
+                        project_id,
+                        title,
+                        description,
+                        status,
+                        due_date,
+                        priority
                     )
-                    VALUES (%s, %s, %s, %s,%s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (
@@ -99,8 +113,15 @@ def create_task(
 @router.get("")
 def list_tasks(
     project_id: int,
+    task_status: TaskStatus | None = None,
+    priority: TaskPriority | None = None,
+    overdue: bool = False,
+    search: str | None = Query(default=None, min_length=1, max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
 ):
+    """Filter, search, sort, and paginate tasks for an owned project."""
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
@@ -108,11 +129,49 @@ def list_tasks(
                     cursor, project_id, current_user["id"]
                 )
 
+                conditions = ["project_id = %s"]
+                parameters: list = [project_id]
+
+                if task_status is not None:
+                    conditions.append("status = %s")
+                    parameters.append(task_status)
+
+                if priority is not None:
+                    conditions.append("priority = %s")
+                    parameters.append(priority)
+
+                if overdue:
+                    conditions.append(
+                        """
+                        due_date < CURRENT_DATE
+                        AND status != 'completed'
+                        """
+                    )
+
+                if search is not None:
+                    conditions.append("title ILIKE %s")
+                    parameters.append(f"%{search.strip()}%")
+
+                where_clause = " AND ".join(conditions)
+
+                # Count matching tasks before applying pagination.
                 cursor.execute(
-                    """
+                    f"""
+                    SELECT COUNT(*) AS total
+                    FROM tasks
+                    WHERE {where_clause}
+                    """,
+                    parameters,
+                )
+                total = cursor.fetchone()["total"]
+
+                offset = (page - 1) * page_size
+
+                cursor.execute(
+                    f"""
                     SELECT *
                     FROM tasks
-                    WHERE project_id = %s
+                    WHERE {where_clause}
                     ORDER BY
                         CASE priority
                             WHEN 'high' THEN 1
@@ -120,14 +179,25 @@ def list_tasks(
                             WHEN 'low' THEN 3
                         END,
                         CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
-                        due_date,
-                        id
+                        due_date ASC,
+                        id ASC
+                    LIMIT %s OFFSET %s
                     """,
-                    (project_id,),
+                    parameters + [page_size, offset],
                 )
                 tasks = cursor.fetchall()
 
-        return [task_response(task) for task in tasks]
+        total_pages = ceil(total / page_size) if total else 0
+
+        return {
+            "items": [task_response(task) for task in tasks],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1 and total_pages > 0,
+        }
 
     except psycopg.Error:
         raise HTTPException(
@@ -141,7 +211,7 @@ def list_overdue_tasks(
     project_id: int,
     current_user: dict = Depends(get_current_user),
 ):
-    """Return unfinished tasks whose deadlines have passed."""
+    """Return all unfinished tasks whose deadlines have passed."""
     try:
         with get_database_connection() as connection:
             with connection.cursor() as cursor:
@@ -156,7 +226,7 @@ def list_overdue_tasks(
                     WHERE project_id = %s
                       AND due_date < CURRENT_DATE
                       AND status != 'completed'
-                    ORDER BY due_date, id
+                    ORDER BY due_date ASC, id ASC
                     """,
                     (project_id,),
                 )
@@ -224,7 +294,7 @@ def update_task(
             detail="Provide at least one field to update.",
         )
 
-    nullable_fields = {"due_date", "description"}
+    nullable_fields = {"description", "due_date"}
 
     if any(
         value is None and field not in nullable_fields
@@ -232,18 +302,7 @@ def update_task(
     ):
         raise HTTPException(
             status_code=422,
-            detail="Title and status cannot be set to null.",
-        )
-
-    # Allow explicitly clearing an existing deadline or description.
-    if "due_date" in changes and changes["due_date"] is None:
-        pass
-
-    allowed_fields = {"title", "description", "status", "due_date","priority"}
-    if not set(changes).issubset(allowed_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid update fields.",
+            detail="Title, status, and priority cannot be set to null.",
         )
 
     assignments = ", ".join(
