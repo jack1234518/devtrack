@@ -322,3 +322,45 @@ def test_task_pagination_validation():
             params={"page_size": 101},
         )
         assert response.status_code == 422
+
+def test_other_user_cannot_update_or_delete_task():
+    with TestClient(app) as client:
+        owner_headers, project_id = create_user_and_project(client)
+        other_headers, _ = create_user_and_project(client)
+
+        base = f"/projects/{project_id}/tasks"
+
+        created = client.post(
+            base,
+            headers=owner_headers,
+            json={"title": "Private task"},
+        )
+
+        assert created.status_code == 201
+        task_id = created.json()["id"]
+
+        updated = client.patch(
+            f"{base}/{task_id}",
+            headers=other_headers,
+            json={"title": "Unauthorized change"},
+        )
+
+        deleted = client.delete(
+            f"{base}/{task_id}",
+            headers=other_headers,
+        )
+
+        assert updated.status_code == 404
+        assert deleted.status_code == 404
+
+        # Confirm the task still exists for its owner.
+        retrieved = client.get(
+            base,
+            headers=owner_headers,
+        )
+
+        assert retrieved.status_code == 200
+        assert any(
+            task["id"] == task_id
+            for task in retrieved.json()["items"]
+        )

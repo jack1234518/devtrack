@@ -1,4 +1,9 @@
 
+from datetime import datetime, timedelta, timezone
+
+import jwt
+
+from app.security import JWT_ALGORITHM, JWT_SECRET_KEY
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -240,3 +245,23 @@ def test_invalid_project_status():
         )
 
     assert response.status_code == 422
+
+def test_expired_token_is_rejected():
+    expired_token = jwt.encode(
+        {
+            "sub": "1",
+            "iat": datetime.now(timezone.utc) - timedelta(hours=1),
+            "exp": datetime.now(timezone.utc) - timedelta(minutes=30),
+            "type": "access",
+        },
+        JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/projects",
+            headers={"Authorization": f"Bearer {expired_token}"},
+        )
+
+    assert response.status_code == 401

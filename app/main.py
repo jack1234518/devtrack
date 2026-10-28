@@ -119,7 +119,7 @@ def normalize_email(email: str) -> str:
 
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Enter a valid email address.",
         )
 
@@ -405,7 +405,7 @@ def update_project(
 
     if any(value is None for value in changes.values()):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Fields cannot be set to null. Provide valid values.",
         )
 
