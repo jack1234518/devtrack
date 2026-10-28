@@ -4,18 +4,16 @@ import re
 from contextlib import asynccontextmanager
 from typing import Literal
 
-import jwt
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Response, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
 from app.database import get_database_connection
+from app.dependencies import get_current_user
 from app.security import (
     ACCESS_TOKEN_MINUTES,
     create_access_token,
-    decode_access_token,
     hash_password,
     verify_password,
 )
@@ -65,8 +63,6 @@ app = FastAPI(
     version="0.4.0",
     lifespan=lifespan,
 )
-
-bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # --------------------------------------------------
@@ -124,54 +120,6 @@ def normalize_email(email: str) -> str:
         )
 
     return normalized
-
-
-# --------------------------------------------------
-# AUTHENTICATION DEPENDENCY
-# --------------------------------------------------
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> dict:
-    """Authenticate a request and return the database user."""
-
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        payload = decode_access_token(credentials.credentials)
-        user_id = int(payload["sub"])
-    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired access token.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        with get_database_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, email FROM users WHERE id = %s",
-                    (user_id,),
-                )
-                user = cursor.fetchone()
-
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account no longer exists.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        return user
-
-    except psycopg.Error:
-        database_error()
 
 
 # --------------------------------------------------

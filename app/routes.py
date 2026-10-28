@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from app.database import get_database_connection
-from app.main import get_current_user
+from app.dependencies import get_current_user
 
 
 router = APIRouter(
